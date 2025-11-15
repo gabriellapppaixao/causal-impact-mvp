@@ -1,30 +1,59 @@
-# 📈 Causal Impact – MVP 
+# 📈 Calculadora de Causal Impact – MVP 
 
-Este é um MVP de uma calculadora de *Causal Impact* feita para testar,
-de forma simples, o impacto real de campanhas de Awareness e Consideração usando séries temporais (CSV).
+Este repositório contém um MVP de uma calculadora de *Causal Impact*,
+pensada para analisar o impacto de campanhas (especialmente de Awareness
+e Consideração) em séries temporais, como:
 
-O objetivo do MVP é permitir que qualquer pessoa da equipe consiga:
+- buscas,
+- tráfego orgânico,
+- tráfego direto,
+- métricas de e-commerce.
 
-- Fazer **upload de um CSV** com série temporal
-- Selecionar **target** e **covariáveis**
-- Definir **período pré** e **pós-intervenção**
-- Rodar o **modelo Causal Impact**
-- Visualizar:
-  - Gráfico *observado vs. contrafactual*
-  - Impacto total e percentual
-  - Intervalo de confiança
-  - Sumário automático
-
-O deploy está feito via **Streamlit Cloud**, permitindo que qualquer pessoa teste o MVP diretamente pela interface web.
+A aplicação é feita em **Streamlit** e pode ser executada localmente ou
+hospedada no **Streamlit Cloud**.
 
 ---
 
-## 🚀 Como rodar localmente (opcional)
+## 🚀 Como usar (visão geral)
 
-Criar ambiente virtual (opcional):
+1. Faça upload de um arquivo **CSV** contendo:
+   - uma coluna `date` em formato `YYYY-MM-DD`;
+   - pelo menos uma coluna numérica (target);
+   - opcionalmente, colunas numéricas de controle.
 
-```bash
-python -m venv .venv
-source .venv/bin/activate    # macOS/Linux
-# ou
-.venv\Scripts\Activate.ps1   # Windows
+2. Escolha:
+   - a métrica alvo (target),
+   - as séries de controle (se quiser),
+   - o período **pré** e **pós** intervenção (campanha/evento).
+
+3. Clique em **“Rodar análise de Causal Impact”**.
+
+A aplicação irá:
+
+- estimar o contrafactual (o que teria acontecido sem a campanha),
+- comparar com o observado,
+- mostrar o summary numérico,
+- mostrar um report em texto,
+- e gerar um gráfico Observado vs Contrafactual.
+
+---
+
+## 🧩 Formato do CSV
+
+O CSV deve ter pelo menos:
+
+- `date`: coluna de datas (ex.: `2024-01-01`),
+- `target`: métrica que você quer analisar (ex.: `organic_sessions`).
+
+Opcionalmente:
+
+- `control_1`, `control_2`, ...: séries de controle que ajudem o modelo a entender o comportamento da métrica.
+
+Exemplo:
+
+```csv
+date,organic_sessions,paid_sessions,search_interest
+2024-01-01,1234,567,48
+2024-01-02,1300,590,50
+2024-01-03,1288,610,51
+...
