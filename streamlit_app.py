@@ -10,7 +10,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📈 Calculadora de Causal Impact – MVP (Natura)")
+st.title("📈 Calculadora de Causal Impact – MVP")
 
 st.markdown(
     """
@@ -56,7 +56,7 @@ if uploaded is not None:
     st.subheader("🔍 Preview dos dados")
     st.dataframe(df.head())
 
-    # Seleção de colunas
+    # Seleção de colunas numéricas
     numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
     if not numeric_cols:
         st.error("Não foram encontradas colunas numéricas para usar como métricas.")
@@ -103,15 +103,38 @@ if uploaded is not None:
         # Tratamento simples de NAs
         df_ci = df_ci.fillna(method="ffill").fillna(method="bfill")
 
-        pre_period = [pre_start.strftime("%Y-%m-%d"), pre_end.strftime("%Y-%m-%d")]
-        post_period = [post_start.strftime("%Y-%m-%d"), post_end.strftime("%Y-%m-%d")]
+        # 🔑 Converter datas escolhidas em índices numéricos
+        try:
+            pre_start_idx = df_ci.index.get_loc(pd.to_datetime(pre_start))
+            pre_end_idx = df_ci.index.get_loc(pd.to_datetime(pre_end))
+            post_start_idx = df_ci.index.get_loc(pd.to_datetime(post_start))
+            post_end_idx = df_ci.index.get_loc(pd.to_datetime(post_end))
+        except KeyError as e:
+            st.error(f"Alguma das datas selecionadas não existe exatamente no índice da série: {e}")
+            st.stop()
 
-        st.info(f"Rodando CausalImpact com pré-período {pre_period} e pós-período {post_period}...")
+        # Conferir ordem dos índices
+        if not (pre_start_idx < pre_end_idx < post_start_idx < post_end_idx):
+            st.error("Ordem inválida dos períodos pré e pós. Verifique as datas.")
+            st.stop()
+
+        pre_period = [pre_start_idx, pre_end_idx]
+        post_period = [post_start_idx, post_end_idx]
+
+        st.info(
+            f"Rodando CausalImpact com pré-período (índices) {pre_period} "
+            f"e pós-período (índices) {post_period}..."
+        )
 
         try:
             ci = CausalImpact(df_ci, pre_period, post_period)
         except Exception as e:
             st.error(f"Erro ao rodar CausalImpact: {e}")
+            st.stop()
+
+        # Garantir que ci.inferences não está vazio
+        if getattr(ci, "inferences", None) is None:
+            st.error("CausalImpact não conseguiu gerar inferências. Verifique se há dados suficientes nos períodos pré e pós.")
             st.stop()
 
         # Summary numérico
