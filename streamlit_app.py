@@ -1,10 +1,11 @@
 import io
-from datetime import datetime, date
+from datetime import date
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
+import statsmodels.api as sm
 import streamlit as st
-from causalimpact import CausalImpact  # vem do pacote tfcausalimpact
 
 
 # -----------------------------
@@ -13,7 +14,7 @@ from causalimpact import CausalImpact  # vem do pacote tfcausalimpact
 def load_csv(uploaded_file: io.BytesIO) -> pd.DataFrame:
     df = pd.read_csv(uploaded_file)
 
-    # Normalizar nome da coluna de data
+    # Descobre coluna de data
     possible_date_cols = ["date", "data", "dia", "Date", "DATA"]
     date_col = None
     for c in df.columns:
@@ -33,7 +34,6 @@ def load_csv(uploaded_file: io.BytesIO) -> pd.DataFrame:
 
 
 def build_pre_post_periods(df: pd.DataFrame, intervention_date: date):
-    """Retorna períodos no formato aceito pelo CausalImpact (strings de data)."""
     if df.empty:
         raise ValueError("O CSV está vazio.")
 
@@ -46,17 +46,96 @@ def build_pre_post_periods(df: pd.DataFrame, intervention_date: date):
             f"dentro do intervalo de datas do CSV ({min_date} a {max_date})."
         )
 
-    # Pré = tudo até o dia anterior à intervenção
-    pre_end = intervention_date.fromordinal(intervention_date.toordinal() - 1)
+    pre_end = date.fromordinal(intervention_date.toordinal() - 1)
     if pre_end < min_date:
         raise ValueError(
             "Período pré-intervenção ficou vazio. "
             "Escolha uma data de intervenção mais para frente."
         )
 
-    pre_period = [str(min_date), str(pre_end)]
-    post_period = [str(intervention_date), str(max_date)]
+    pre_period = [min_date, pre_end]
+    post_period = [intervention_date, max_date]
     return pre_period, post_period
+
+
+def fit_forecast_structural(series: pd.Series, pre_period, post_period):
+    """
+    Ajusta um modelo simples de nível local (state-space) no pré
+    e projeta o contrafactual no pós.
+    """
+    pre_start, pre_end = pre_period
+    post_start, post_end = post_period
+
+    # Index diário contínuo
+    full_index = pd.date_range(series.index.min(), series.index.max(), freq="D")
+    series = series.reindex(full_index)
+    series = series.astype(float)
+    series = series.fillna(method="ffill").fillna(method="bfill")
+
+    pre_mask = (series.index.date >= pre_start) & (series.index.date <= pre_end)
+    post_mask = (series.index.date >= post_start) & (series.index.date <= post_end)
+
+    y_pre = series.loc[pre_mask]
+
+    if len(y_pre) < 20:
+        raise ValueError("Período pré muito curto (mínimo recomendado: 20 pontos).")
+
+    # Modelo de nível local
+    mod = sm.tsa.UnobservedComponents(y_pre, level="local level")
+    res = mod.fit(disp=False)
+
+    # Forecast no pós
+    post_index = series.loc[post_mask].index
+    n_post = len(post_index)
+    if n_post == 0:
+        raise ValueError("Período pós-intervenção está vazio.")
+
+    forecast_res = res.get_forecast(steps=n_post)
+    mean_fcst = forecast_res.predicted_mean
+    ci_fcst = forecast_res.conf_int(alpha=0.05)
+
+    # Dados observados no pós
+    y_post = series.loc[post_mask]
+
+    # Alinhar por segurança
+    mean_fcst.index = post_index
+    ci_fcst.index = post_index
+
+    return y_pre, y_post, mean_fcst, ci_fcst
+
+
+def summarize_effect(y_post, mean_fcst, ci_fcst):
+    """
+    Calcula efeito total e percentual, com IC aproximado.
+    """
+    # efeito ponto a ponto
+    diff = y_post - mean_fcst
+
+    # efeito total no período
+    effect_total = diff.sum()
+    expected_total = mean_fcst.sum()
+    rel_effect = effect_total / expected_total if expected_total != 0 else np.nan
+
+    # aproxima IC pro efeito total somando variâncias
+    if "lower y" in ci_fcst.columns and "upper y" in ci_fcst.columns:
+        # largura do intervalo ~ 4 * sigma (aprox), sigma ~ (upper-lower)/4
+        sigma = (ci_fcst["upper y"] - ci_fcst["lower y"]) / 4.0
+        var_total = np.sum(sigma**2)
+        se_total = np.sqrt(var_total)
+        z = 1.96
+        lower_total = effect_total - z * se_total
+        upper_total = effect_total + z * se_total
+    else:
+        lower_total = np.nan
+        upper_total = np.nan
+
+    return {
+        "effect_total": effect_total,
+        "expected_total": expected_total,
+        "rel_effect": rel_effect,
+        "lower_total": lower_total,
+        "upper_total": upper_total,
+    }
 
 
 # -----------------------------
@@ -64,12 +143,17 @@ def build_pre_post_periods(df: pd.DataFrame, intervention_date: date):
 # -----------------------------
 st.set_page_config(page_title="Causal Impact MVP", layout="wide")
 
-st.title("🔍 MVP – Calculadora de Causal Impact")
+st.title("🔍 MVP – Calculadora de Impacto Causal (modelo próprio)")
 st.write(
     """
-    Faça upload de um CSV com **datas** e **uma métrica** (por exemplo, `organic_sessions`)  
-    e escolha a data em que a campanha começou.  
-    O app estima qual teria sido o comportamento **sem campanha** e compara com o observado.
+    Este MVP estima o impacto de uma campanha comparando:
+
+    **O que aconteceu** (série observada)  
+    vs.  
+    **O que teria acontecido sem a campanha** (contrafactual estimado por modelo de série temporal).
+
+    Ele usa um modelo estrutural simples (nível local) da biblioteca `statsmodels` em vez da
+    biblioteca oficial `CausalImpact` (que está incompatível com o ambiente do Streamlit Cloud).
     """
 )
 
@@ -103,9 +187,9 @@ st.write(f"Intervalo de datas no CSV: **{min_date}** até **{max_date}**")
 
 metric = st.selectbox("Escolha a métrica para analisar", metric_cols)
 
-default_intervention = min_date.fromordinal(min_date.toordinal() + 40)  # só um chute
-if default_intervention > max_date:
-    default_intervention = min_date
+# chute de data de intervenção no meio da série
+mid_ordinal = (min_date.toordinal() + max_date.toordinal()) // 2
+default_intervention = date.fromordinal(mid_ordinal)
 
 intervention_date = st.date_input(
     "Data de início da campanha (intervenção)",
@@ -114,57 +198,83 @@ intervention_date = st.date_input(
     max_value=max_date,
 )
 
-if st.button("Rodar análise de Causal Impact"):
-    with st.spinner("Rodando modelo de Causal Impact..."):
+if st.button("🚀 Rodar análise de impacto"):
+
+    with st.spinner("Rodando modelo de impacto causal..."):
         try:
             pre_period, post_period = build_pre_post_periods(df, intervention_date)
 
-            # CausalImpact espera a primeira coluna como y
-            ci_df = df[["date", metric]].copy()
-            ci_df = ci_df.set_index("date")
+            series = df.set_index("date")[metric].astype(float)
 
-            # Rodar modelo (tfcausalimpact)
-            ci = CausalImpact(ci_df, pre_period, post_period)
+            y_pre, y_post, mean_fcst, ci_fcst = fit_forecast_structural(
+                series, pre_period, post_period
+            )
+
+            summary = summarize_effect(y_post, mean_fcst, ci_fcst)
 
         except Exception as e:
-            st.error(f"Erro ao rodar CausalImpact: {e}")
+            st.error(f"Erro ao rodar a análise: {e}")
             st.stop()
 
-        # -----------------------------
-        # Saída – resumo
-        # -----------------------------
-        st.subheader("Resumo numérico")
+    # -----------------------------
+    # Resumo numérico
+    # -----------------------------
+    st.subheader("📊 Resumo do impacto")
 
-        try:
-            summary_table = ci.summary()  # tabela curta
-            summary_report = ci.summary(output="report")  # texto longo
-        except Exception as e:
-            st.error(f"Erro ao gerar resumo: {e}")
-            summary_table = None
-            summary_report = None
+    effect = summary["effect_total"]
+    expected = summary["expected_total"]
+    rel = summary["rel_effect"]
+    lower = summary["lower_total"]
+    upper = summary["upper_total"]
 
-        if summary_table is not None:
-            st.text(summary_table)
+    st.markdown(
+        f"""
+        - Impacto total (período pós): **{effect:.2f}** unidades  
+        - Valor esperado sem campanha: **{expected:.2f}** unidades  
+        - Impacto relativo: **{rel*100:.1f}%**  
 
-        if summary_report is not None:
-            with st.expander("Ver explicação detalhada (report textual)"):
-                st.text(summary_report)
+        Intervalo aproximado para o impacto total (95%):  
+        - **{lower:.2f}** a **{upper:.2f}**
+        """
+    )
 
-        # -----------------------------
-        # Saída – gráfico
-        # -----------------------------
-        st.subheader("Gráfico do impacto causal")
+    # -----------------------------
+    # Gráfico
+    # -----------------------------
+    st.subheader("📉 Observado vs. contrafactual")
 
-        try:
-            # Algumas versões retornam fig, outras desenham no gcf()
-            fig = ci.plot()
-            if fig is None:
-                fig = plt.gcf()
-            st.pyplot(fig)
-            plt.close("all")
-        except Exception as e:
-            st.error(f"Erro ao gerar gráfico: {e}")
-            st.info(
-                "Mesmo sem o gráfico, o resumo numérico acima já mostra "
-                "o impacto estimado da campanha."
-            )
+    fig, ax = plt.subplots(figsize=(10, 4))
+
+    # série completa
+    full_series = series.copy()
+    ax.plot(full_series.index, full_series.values, label="observado", linewidth=1.5)
+
+    # contrafactual no pós
+    ax.plot(mean_fcst.index, mean_fcst.values, label="contrafactual (sem campanha)", linestyle="--")
+
+    # faixa de confiança
+    if "lower y" in ci_fcst.columns and "upper y" in ci_fcst.columns:
+        ax.fill_between(
+            mean_fcst.index,
+            ci_fcst["lower y"],
+            ci_fcst["upper y"],
+            alpha=0.2,
+            label="IC 95% (contrafactual)",
+        )
+
+    ax.axvline(
+        pd.to_datetime(intervention_date),
+        color="red",
+        linestyle=":",
+        label="início campanha",
+    )
+
+    ax.set_xlabel("Data")
+    ax.set_ylabel(metric)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    st.pyplot(fig)
+    plt.close(fig)
+
+    st.success("Análise concluída! ✅")
