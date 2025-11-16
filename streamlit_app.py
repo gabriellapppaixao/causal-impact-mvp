@@ -113,8 +113,36 @@ if uploaded is not None:
         )
 
         # ---- Rodar CausalImpact ----
+        if st.button("🚀 Rodar análise de Causal Impact"):
+        # ---- Validações de datas ----
+        if pre_start >= pre_end:
+            st.error("O fim do pré-período deve ser depois do início.")
+            st.stop()
+        if post_start >= post_end:
+            st.error("O fim do pós-período deve ser depois do início.")
+            st.stop()
+        if pre_end >= post_start:
+            st.error("O pré-período deve terminar antes do início do pós-período.")
+            st.stop()
+
+        cols_for_model = [target] + controls
+        df_ci = df[cols_for_model].copy()
+
+        # NA simples
+        df_ci = df_ci.fillna(method="ffill").fillna(method="bfill")
+
+        pre_period = [pre_start.strftime("%Y-%m-%d"), pre_end.strftime("%Y-%m-%d")]
+        post_period = [post_start.strftime("%Y-%m-%d"), post_end.strftime("%Y-%m-%d")]
+
+        st.info(
+            f"Rodando CausalImpact com pré-período {pre_period} "
+            f"e pós-período {post_period}..."
+        )
+
         try:
             ci = CausalImpact(df_ci, pre_period, post_period)
+            # 👇 esta linha é o pulo do gato
+            ci.run()
         except Exception as e:
             st.error(f"Erro ao rodar CausalImpact: {e}")
             st.stop()
@@ -125,6 +153,7 @@ if uploaded is not None:
             st.text(ci.summary())
         except Exception as e:
             st.error(f"Erro ao gerar summary: {e}")
+
         # ---- Report ----
         st.subheader("📝 Report")
         try:
@@ -149,7 +178,4 @@ if uploaded is not None:
         except Exception as e:
             st.error(f"Erro ao gerar o gráfico: {e}")
 
-        st.success("Análise concluída (ou pelo menos rodou sem quebrar 😅).")
-
-else:
-    st.info("Faça upload de um arquivo CSV para começar.")
+        st.success("Análise concluída! ✅")
