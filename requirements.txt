@@ -1,8 +1,8 @@
-streamlit
-pandas
-numpy
-matplotlib
-scipy
-statsmodels
-causalimpact
-pytrends
+streamlit==1.39.0
+pandas==2.2.3
+matplotlib==3.9.2
+
+# CausalImpact moderninho (usa TensorFlow Probability)
+tfcausalimpact==0.0.18
+tensorflow==2.16.1
+tensorflow_probability==0.24.0
