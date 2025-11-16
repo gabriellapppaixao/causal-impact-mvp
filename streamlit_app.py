@@ -29,7 +29,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📈 Calculadora de Causal Impact – MVP (Natura)")
+st.title("📈 Calculadora de Causal Impact – MVP")
 
 st.markdown(
     """
