@@ -1,232 +1,170 @@
-import streamlit as st
-import pandas as pd
 import io
+from datetime import datetime, date
 
-# -------------------------------------------------------------------
-# Monkey patch para compatibilidade do causalimpact com pandas 2.x
-# -------------------------------------------------------------------
-try:
-    import pandas.core.dtypes.common as cdc
-    if not hasattr(cdc, "is_datetime_or_timedelta_dtype"):
-        from pandas.api.types import is_datetime64_any_dtype, is_timedelta64_dtype
-
-        def is_datetime_or_timedelta_dtype(arr):
-            return is_datetime64_any_dtype(arr) or is_timedelta64_dtype(arr)
-
-        cdc.is_datetime_or_timedelta_dtype = is_datetime_or_timedelta_dtype
-except Exception:
-    # Se não conseguir fazer o patch por algum motivo, seguimos assim mesmo.
-    pass
-
-from causalimpact import CausalImpact
 import matplotlib.pyplot as plt
+import pandas as pd
+import streamlit as st
+from causalimpact import CausalImpact  # vem do pacote tfcausalimpact
 
-# -------------------------------------------------------
-# Configuração da página
-# -------------------------------------------------------
-st.set_page_config(
-    page_title="Calculadora de Causal Impact - MVP",
-    layout="wide"
-)
 
-st.title("📈 Calculadora de Causal Impact – MVP")
+# -----------------------------
+# Helpers
+# -----------------------------
+def load_csv(uploaded_file: io.BytesIO) -> pd.DataFrame:
+    df = pd.read_csv(uploaded_file)
 
-st.markdown(
+    # Normalizar nome da coluna de data
+    possible_date_cols = ["date", "data", "dia", "Date", "DATA"]
+    date_col = None
+    for c in df.columns:
+        if c in possible_date_cols:
+            date_col = c
+            break
+
+    if date_col is None:
+        # Tenta primeira coluna como data
+        date_col = df.columns[0]
+
+    df[date_col] = pd.to_datetime(df[date_col])
+    df = df.sort_values(by=date_col)
+    df = df.reset_index(drop=True)
+    df = df.rename(columns={date_col: "date"})
+    return df
+
+
+def build_pre_post_periods(df: pd.DataFrame, intervention_date: date):
+    """Retorna períodos no formato aceito pelo CausalImpact (strings de data)."""
+    if df.empty:
+        raise ValueError("O CSV está vazio.")
+
+    min_date = df["date"].min().date()
+    max_date = df["date"].max().date()
+
+    if not (min_date <= intervention_date <= max_date):
+        raise ValueError(
+            f"A data de intervenção ({intervention_date}) precisa estar "
+            f"dentro do intervalo de datas do CSV ({min_date} a {max_date})."
+        )
+
+    # Pré = tudo até o dia anterior à intervenção
+    pre_end = intervention_date.fromordinal(intervention_date.toordinal() - 1)
+    if pre_end < min_date:
+        raise ValueError(
+            "Período pré-intervenção ficou vazio. "
+            "Escolha uma data de intervenção mais para frente."
+        )
+
+    pre_period = [str(min_date), str(pre_end)]
+    post_period = [str(intervention_date), str(max_date)]
+    return pre_period, post_period
+
+
+# -----------------------------
+# UI
+# -----------------------------
+st.set_page_config(page_title="Causal Impact MVP", layout="wide")
+
+st.title("🔍 MVP – Calculadora de Causal Impact")
+st.write(
     """
-Esta ferramenta permite analisar o impacto **causal** de uma campanha em uma série temporal.
-
-**Passos:**
-1. Faça upload de um CSV com uma coluna `date` e pelo menos uma métrica (target).
-2. Selecione a métrica alvo (target) e, opcionalmente, séries de controle.
-3. Defina o período **pré** e **pós** intervenção.
-4. Clique em **Rodar análise**.
-"""
+    Faça upload de um CSV com **datas** e **uma métrica** (por exemplo, `organic_sessions`)  
+    e escolha a data em que a campanha começou.  
+    O app estima qual teria sido o comportamento **sem campanha** e compara com o observado.
+    """
 )
 
-# -------------------------------------------------------
-# Upload do CSV
-# -------------------------------------------------------
-uploaded = st.file_uploader("📁 Upload do arquivo CSV", type=["csv"])
+uploaded_file = st.file_uploader("Envie um CSV", type=["csv"])
 
-if uploaded is None:
-    st.info("Faça upload de um arquivo CSV para começar.")
+if uploaded_file is None:
+    st.info("Envie um CSV para começar.")
     st.stop()
 
-# -------------------------------------------------------
-# Leitura do arquivo
-# -------------------------------------------------------
+# -----------------------------
+# Dados
+# -----------------------------
 try:
-    df = pd.read_csv(uploaded)
+    df = load_csv(uploaded_file)
 except Exception as e:
     st.error(f"Erro ao ler o CSV: {e}")
     st.stop()
 
-# validação da coluna date
-if "date" not in df.columns:
-    st.error("O CSV precisa ter uma coluna chamada `date`.")
+metric_cols = [c for c in df.columns if c != "date"]
+
+if not metric_cols:
+    st.error("Não encontrei nenhuma coluna de métrica além da coluna de data.")
     st.stop()
 
-# conversão da data
-try:
-    df["date"] = pd.to_datetime(df["date"])
-except Exception as e:
-    st.error(f"Erro ao converter a coluna `date` para datetime: {e}")
-    st.stop()
-
-# colocar date como índice
-df = df.set_index("date").sort_index()
-
-if df.empty:
-    st.error("O CSV está vazio após processamento.")
-    st.stop()
-
-# garantir série contínua diária
-full_index = pd.date_range(start=df.index.min(), end=df.index.max(), freq="D")
-df = df.reindex(full_index)
-df.index.name = "date"
-
-# preencher NAs
-df = df.fillna(method="ffill").fillna(method="bfill")
-
-# -------------------------------------------------------
-# Preview
-# -------------------------------------------------------
-st.subheader("🔍 Preview dos dados")
+st.subheader("Pré-visualização dos dados")
 st.dataframe(df.head())
 
-# -------------------------------------------------------
-# Seleção de colunas numéricas
-# -------------------------------------------------------
-numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
-if not numeric_cols:
-    st.error("Não há colunas numéricas para usar como métrica.")
-    st.stop()
+min_date = df["date"].min().date()
+max_date = df["date"].max().date()
+st.write(f"Intervalo de datas no CSV: **{min_date}** até **{max_date}**")
 
-target = st.selectbox("🎯 Métrica alvo (target)", numeric_cols)
-controls = st.multiselect(
-    "📊 Séries de controle (opcional)",
-    [c for c in numeric_cols if c != target]
+metric = st.selectbox("Escolha a métrica para analisar", metric_cols)
+
+default_intervention = min_date.fromordinal(min_date.toordinal() + 40)  # só um chute
+if default_intervention > max_date:
+    default_intervention = min_date
+
+intervention_date = st.date_input(
+    "Data de início da campanha (intervenção)",
+    value=default_intervention,
+    min_value=min_date,
+    max_value=max_date,
 )
 
-# -------------------------------------------------------
-# Períodos disponíveis
-# -------------------------------------------------------
-min_date = df.index.min().date()
-max_date = df.index.max().date()
-st.markdown(f"📆 **Datas disponíveis:** {min_date} → {max_date}")
-
-col1, col2 = st.columns(2)
-with col1:
-    pre_start = st.date_input(
-        "Pré-período: início",
-        value=min_date,
-        min_value=min_date,
-        max_value=max_date
-    )
-    pre_end = st.date_input(
-        "Pré-período: fim",
-        value=min_date,
-        min_value=min_date,
-        max_value=max_date
-    )
-with col2:
-    post_start = st.date_input(
-        "Pós-período: início",
-        value=max_date,
-        min_value=min_date,
-        max_value=max_date
-    )
-    post_end = st.date_input(
-        "Pós-período: fim",
-        value=max_date,
-        min_value=min_date,
-        max_value=max_date
-    )
-
-# -------------------------------------------------------
-# BOTÃO – Rodar análise
-# -------------------------------------------------------
-if st.button("🚀 Rodar análise de Causal Impact"):
-
-    # validações
-    if pre_start >= pre_end:
-        st.error("O pré-período precisa terminar depois de começar.")
-        st.stop()
-
-    if post_start >= post_end:
-        st.error("O pós-período precisa terminar depois de começar.")
-        st.stop()
-
-    if pre_end >= post_start:
-        st.error("O pré-período deve terminar **ANTES** do início do pós-período.")
-        st.stop()
-
-    # preparar DF
-    cols_for_model = [target] + controls
-    df_ci = df[cols_for_model].copy()
-
-    df_ci = df_ci.fillna(method="ffill").fillna(method="bfill")
-
-    # períodos em formato aceito pela lib
-    pre_period = [pre_start.strftime("%Y-%m-%d"), pre_end.strftime("%Y-%m-%d")]
-    post_period = [post_start.strftime("%Y-%m-%d"), post_end.strftime("%Y-%m-%d")]
-
-    st.info(
-        f"Rodando modelo CausalImpact…\n"
-        f"Pré: {pre_period}\n"
-        f"Pós: {post_period}"
-    )
-
-    # -------------------------------------------------------
-    # Rodar modelo
-    # -------------------------------------------------------
-    try:
-        ci = CausalImpact(df_ci, pre_period, post_period)
-        # algumas versões precisam explicitamente de run()
+if st.button("Rodar análise de Causal Impact"):
+    with st.spinner("Rodando modelo de Causal Impact..."):
         try:
-            ci.run()
-        except Exception:
-            pass
-    except Exception as e:
-        st.error(f"Erro ao rodar CausalImpact: {e}")
-        st.stop()
+            pre_period, post_period = build_pre_post_periods(df, intervention_date)
 
-    # -------------------------------------------------------
-    # Summary
-    # -------------------------------------------------------
-    st.subheader("📊 Summary")
-    try:
-        st.text(ci.summary())
-    except Exception as e:
-        st.error(f"Erro ao gerar summary: {e}")
+            # CausalImpact espera a primeira coluna como y
+            ci_df = df[["date", metric]].copy()
+            ci_df = ci_df.set_index("date")
 
-    # -------------------------------------------------------
-    # Report
-    # -------------------------------------------------------
-    st.subheader("📝 Report")
-    try:
-        st.text(ci.summary(output="report"))
-    except Exception as e:
-        st.error(f"Erro ao gerar report: {e}")
+            # Rodar modelo (tfcausalimpact)
+            ci = CausalImpact(ci_df, pre_period, post_period)
 
-    # -------------------------------------------------------
-    # Plot
-    # -------------------------------------------------------
-    st.subheader("📉 Gráfico Observado vs. Contrafactual")
-    try:
-        fig = ci.plot()
-        st.pyplot(fig)
+        except Exception as e:
+            st.error(f"Erro ao rodar CausalImpact: {e}")
+            st.stop()
 
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=150)
+        # -----------------------------
+        # Saída – resumo
+        # -----------------------------
+        st.subheader("Resumo numérico")
 
-        st.download_button(
-            label="⬇️ Baixar gráfico",
-            data=buf.getvalue(),
-            file_name="causalimpact.png",
-            mime="image/png"
-        )
-    except Exception as e:
-        st.error(f"Erro ao gerar gráfico: {e}")
+        try:
+            summary_table = ci.summary()  # tabela curta
+            summary_report = ci.summary(output="report")  # texto longo
+        except Exception as e:
+            st.error(f"Erro ao gerar resumo: {e}")
+            summary_table = None
+            summary_report = None
 
-    st.success("Análise concluída! ✅")
+        if summary_table is not None:
+            st.text(summary_table)
+
+        if summary_report is not None:
+            with st.expander("Ver explicação detalhada (report textual)"):
+                st.text(summary_report)
+
+        # -----------------------------
+        # Saída – gráfico
+        # -----------------------------
+        st.subheader("Gráfico do impacto causal")
+
+        try:
+            # Algumas versões retornam fig, outras desenham no gcf()
+            fig = ci.plot()
+            if fig is None:
+                fig = plt.gcf()
+            st.pyplot(fig)
+            plt.close("all")
+        except Exception as e:
+            st.error(f"Erro ao gerar gráfico: {e}")
+            st.info(
+                "Mesmo sem o gráfico, o resumo numérico acima já mostra "
+                "o impacto estimado da campanha."
+            )
