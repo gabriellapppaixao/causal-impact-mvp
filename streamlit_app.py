@@ -1,8 +1,25 @@
 import streamlit as st
 import pandas as pd
+import io
+
+# -------------------------------------------------------------------
+# Monkey patch para compatibilidade do causalimpact com pandas 2.x
+# -------------------------------------------------------------------
+try:
+    import pandas.core.dtypes.common as cdc
+    if not hasattr(cdc, "is_datetime_or_timedelta_dtype"):
+        from pandas.api.types import is_datetime64_any_dtype, is_timedelta64_dtype
+
+        def is_datetime_or_timedelta_dtype(arr):
+            return is_datetime64_any_dtype(arr) or is_timedelta64_dtype(arr)
+
+        cdc.is_datetime_or_timedelta_dtype = is_datetime_or_timedelta_dtype
+except Exception:
+    # Se não conseguir fazer o patch por algum motivo, seguimos assim mesmo.
+    pass
+
 from causalimpact import CausalImpact
 import matplotlib.pyplot as plt
-import io
 
 # -------------------------------------------------------
 # Configuração da página
@@ -12,7 +29,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📈 Calculadora de Causal Impact – MVP")
+st.title("📈 Calculadora de Causal Impact – MVP (Natura)")
 
 st.markdown(
     """
@@ -100,15 +117,31 @@ st.markdown(f"📆 **Datas disponíveis:** {min_date} → {max_date}")
 
 col1, col2 = st.columns(2)
 with col1:
-    pre_start = st.date_input("Pré-período: início", value=min_date,
-                              min_value=min_date, max_value=max_date)
-    pre_end = st.date_input("Pré-período: fim", value=min_date,
-                            min_value=min_date, max_value=max_date)
+    pre_start = st.date_input(
+        "Pré-período: início",
+        value=min_date,
+        min_value=min_date,
+        max_value=max_date
+    )
+    pre_end = st.date_input(
+        "Pré-período: fim",
+        value=min_date,
+        min_value=min_date,
+        max_value=max_date
+    )
 with col2:
-    post_start = st.date_input("Pós-período: início", value=max_date,
-                               min_value=min_date, max_value=max_date)
-    post_end = st.date_input("Pós-período: fim", value=max_date,
-                             min_value=min_date, max_value=max_date)
+    post_start = st.date_input(
+        "Pós-período: início",
+        value=max_date,
+        min_value=min_date,
+        max_value=max_date
+    )
+    post_end = st.date_input(
+        "Pós-período: fim",
+        value=max_date,
+        min_value=min_date,
+        max_value=max_date
+    )
 
 # -------------------------------------------------------
 # BOTÃO – Rodar análise
@@ -138,14 +171,22 @@ if st.button("🚀 Rodar análise de Causal Impact"):
     pre_period = [pre_start.strftime("%Y-%m-%d"), pre_end.strftime("%Y-%m-%d")]
     post_period = [post_start.strftime("%Y-%m-%d"), post_end.strftime("%Y-%m-%d")]
 
-    st.info(f"Rodando modelo CausalImpact…\nPré: {pre_period}\nPós: {post_period}")
+    st.info(
+        f"Rodando modelo CausalImpact…\n"
+        f"Pré: {pre_period}\n"
+        f"Pós: {post_period}"
+    )
 
     # -------------------------------------------------------
-    # Rodar modelo corretamente
+    # Rodar modelo
     # -------------------------------------------------------
     try:
         ci = CausalImpact(df_ci, pre_period, post_period)
-        ci.run()   # <<< ESSENCIAL – sem isso a lib quebra
+        # algumas versões precisam explicitamente de run()
+        try:
+            ci.run()
+        except Exception:
+            pass
     except Exception as e:
         st.error(f"Erro ao rodar CausalImpact: {e}")
         st.stop()
